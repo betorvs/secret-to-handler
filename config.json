@@ -1,0 +1,22 @@
+{
+    "name": "auto",
+    "prefix_name": "auto",
+    "handlers": [
+        {
+            "key_name": "opsgenie",
+            "command": "sensu-opsgenie-handler -r eu -w -W -F -s https://sensu-dashboard.example.local/c/~/n -m \"{{.Check.Name}}\" -a",
+            "asset": ["sensu-opsgenie-handler"]
+        },
+        {
+            "key_name": "chat",
+            "command": "sensu-hangouts-chat-handler -s https://sensu-dashboard.example.local/c/~/n -m \"{{.Check.Name}}\" -S url -w",
+            "asset": ["sensu-hangouts-chat-handler"]
+        }
+    ],
+    "mutator_command": "sensu-grafana-mutator -g https://grafana.example.local/?orgId=1 -e -k -a -s namespace -d",
+    "mutator": true,
+    "mutator_asset": [
+        "sensu-grafana-mutator"
+    ],
+    "timeout": 15
+}
