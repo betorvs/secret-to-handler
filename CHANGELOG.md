@@ -7,7 +7,11 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-## [0.0.1] - 2000-01-01
+## [0.0.2] - 2021-02-23
+- Fix mutator name
+- Add tests
+
+## [0.0.1] - 2021-02-18
 
 ### Added
 - Initial release

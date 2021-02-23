@@ -31,6 +31,7 @@ type Config struct {
 	Namespace          string
 	Kubeconfig         string
 	LabelSelectors     string
+	DisabledLabel      string
 	MainHandler        string
 	SensuNamespace     string
 	Configuration      string
@@ -128,6 +129,15 @@ var (
 			Default:   "",
 			Usage:     "Query for labelSelectors (e.g. release=stable,environment=qa)",
 			Value:     &plugin.LabelSelectors,
+		},
+		{
+			Path:      "disabled-label",
+			Env:       "KUBERNETES_DISABLED_LABEL",
+			Argument:  "disabled-label",
+			Shorthand: "D",
+			Default:   "",
+			Usage:     "Query for disabled label (e.g. sync=disabled)",
+			Value:     &plugin.DisabledLabel,
 		},
 		{
 			Path:      "main-handler",
@@ -282,7 +292,7 @@ func checkArgs(event *types.Event) (int, error) {
 		return sensu.CheckStateWarning, fmt.Errorf("in configuration you should provide at least one handler")
 	}
 	if len(configuration.Handlers) > 5 {
-		return sensu.CheckStateWarning, fmt.Errorf("to many handler to be configured at same time")
+		return sensu.CheckStateWarning, fmt.Errorf("too many handler to be configured at same time")
 	}
 
 	return sensu.CheckStateOK, nil
@@ -321,7 +331,14 @@ func executeCheck(event *types.Event) (int, error) {
 	var counterErrors int
 	var errorsNames []string
 	var secretsWrapper []SecretWrapper
+	var notSyncedList []string
 	for _, item := range secrets.Items {
+		if plugin.DisabledLabel != "" {
+			if checkDisabledLabels(item.Labels, plugin.DisabledLabel) {
+				notSyncedList = append(notSyncedList, item.Name)
+				continue
+			}
+		}
 		var secret SecretWrapper
 		for k, v := range item.Data {
 			// each secret found: create a filter, mutator and handler ; update handler all-alerts set if needed
@@ -363,6 +380,9 @@ func executeCheck(event *types.Event) (int, error) {
 	}
 	// if dont find any secret, just exit
 	if len(secretsWrapper) == 0 {
+		if len(notSyncedList) != 0 {
+			fmt.Printf("Not synced secrets: %v ", notSyncedList)
+		}
 		return sensu.CheckStateOK, nil
 	}
 
@@ -454,7 +474,7 @@ func executeCheck(event *types.Event) (int, error) {
 	var negativeHandlerList []string
 	if len(mainHandler.Handlers) != 0 {
 		for _, h := range handlers {
-			if !stringInSlice(h, mainHandler.Handlers) {
+			if !StringInSlice(h, mainHandler.Handlers) {
 				negativeHandlerList = append(negativeHandlerList, h)
 			}
 		}
@@ -480,6 +500,9 @@ func executeCheck(event *types.Event) (int, error) {
 		return sensu.CheckStateWarning, fmt.Errorf("cannot parse create these sensu configurations: %v", errorsSensu)
 	}
 
+	if len(notSyncedList) != 0 {
+		fmt.Printf("Not synced secrets: %v ", notSyncedList)
+	}
 	return sensu.CheckStateOK, nil
 }
 
@@ -646,7 +669,7 @@ func generateHandler(name, namespace, command, filter string, assets []string, l
 	filters := []string{"is_incident", "not_silenced", filter}
 	handler.Filters = filters
 	if mutator {
-		handler.Mutator = name
+		handler.Mutator = filter
 	}
 
 	encoded, _ := json.Marshal(handler)
@@ -678,10 +701,25 @@ func generateMutator(name, namespace, command string, asset []string, labels map
 	return bytes.NewBuffer(encoded)
 }
 
-//stringInSlice checks if a slice contains a specific string
-func stringInSlice(a string, list []string) bool {
+//StringInSlice checks if a slice contains a specific string
+func StringInSlice(a string, list []string) bool {
 	for _, b := range list {
 		if b == a {
+			return true
+		}
+	}
+	return false
+}
+
+func checkDisabledLabels(labels map[string]string, label string) bool {
+	var key, value string
+	if strings.Contains(label, "=") {
+		splited := strings.Split(label, "=")
+		key = splited[0]
+		value = splited[1]
+	}
+	for k, v := range labels {
+		if k == key && v == value {
 			return true
 		}
 	}
