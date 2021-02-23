@@ -425,7 +425,7 @@ func executeCheck(event *types.Event) (int, error) {
 			errorsSensu = append(errorsSensu, fmt.Sprintf("filter %s", secret.Name))
 		}
 		if validMutator {
-			mutatorCommand := fmt.Sprintf("%s \"%s\"", configuration.MutatorCommand, secret.Transform)
+			mutatorCommand := fmt.Sprintf("%s '%s'", configuration.MutatorCommand, secret.Transform)
 			mutatorAssets := configuration.MutatorAsset
 			mutator := generateMutator(name, namespace, mutatorCommand, mutatorAssets, labels)
 			err := putRequest(auth, "mutator", name, namespace, mutator)
@@ -443,7 +443,7 @@ func executeCheck(event *types.Event) (int, error) {
 			for k, v := range secret.Keys {
 				if h.KeyName == k {
 					handlerName := fmt.Sprintf("%s-%s", name, h.KeyName)
-					handlerCommand := fmt.Sprintf("%s %s", h.Command, v)
+					handlerCommand := fmt.Sprintf("%s '%s'", h.Command, v)
 					if plugin.HandlerKeyFilePath != "" {
 						handlerCommand = fmt.Sprintf("%s $(cat %s/%s-%s)", h.Command, plugin.HandlerKeyFilePath, h.KeyName, name)
 					}
