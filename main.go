@@ -36,6 +36,7 @@ type Config struct {
 	SensuNamespace     string
 	Configuration      string
 	HandlerKeyFilePath string
+	ReservedNames      string
 	APIBackendPass     string
 	APIBackendUser     string
 	APIBackendKey      string
@@ -54,6 +55,7 @@ type SecretWrapper struct {
 	MatchNamespaces map[string]string `json:"match_namespaces"`
 	Keys            map[string]string `json:"keys"`
 	Transform       string            `json:"transform"`
+	Disabled        bool              `json:"disabled"`
 }
 
 // Auth represents the authentication info
@@ -84,6 +86,7 @@ type HandlerConfig struct {
 var (
 	tlsConfig     tls.Config
 	configuration ConfigWrapper
+	reservedNames []string
 
 	plugin = Config{
 		PluginConfig: sensu.PluginConfig{
@@ -165,6 +168,15 @@ var (
 			Default:   "",
 			Usage:     "Json template for Sensu Check",
 			Value:     &plugin.Configuration,
+		},
+		{
+			Path:      "reserved-names",
+			Env:       "",
+			Argument:  "reserved-names",
+			Shorthand: "R",
+			Default:   "",
+			Usage:     "Reserved Names already in use for Sensu that cannot be used anymore (list splited by comma , )",
+			Value:     &plugin.ReservedNames,
 		},
 		{
 			Path:      "sensu-namespace",
@@ -294,6 +306,16 @@ func checkArgs(event *types.Event) (int, error) {
 	if len(configuration.Handlers) > 5 {
 		return sensu.CheckStateWarning, fmt.Errorf("too many handler to be configured at same time")
 	}
+	if plugin.ReservedNames != "" {
+		if strings.Contains(plugin.ReservedNames, ",") {
+			reservedNames = strings.Split(plugin.ReservedNames, ",")
+		} else {
+			// if doesn't have comma, use this value
+			reservedNames = []string{plugin.ReservedNames}
+		}
+	}
+	// adding main handler into reserved names list
+	reservedNames = append(reservedNames, plugin.MainHandler)
 
 	return sensu.CheckStateOK, nil
 }
@@ -362,6 +384,13 @@ func executeCheck(event *types.Event) (int, error) {
 			if k == "transform" {
 				secret.Transform = string(v)
 			}
+			if k == "disabled" {
+				secret.Disabled = false
+				tmp := string(v)
+				if strings.Contains(tmp, "True") || strings.Contains(tmp, "true") {
+					secret.Disabled = true
+				}
+			}
 			if k == "keys" {
 				temp := make(map[string]string)
 				err := yaml.Unmarshal(v, &temp)
@@ -398,13 +427,19 @@ func executeCheck(event *types.Event) (int, error) {
 		plugin.Name: "owner",
 	}
 	var countErrors int
-	var errorsSensu []string
+	// variables to collect outputs
+	var errorsSensu, deletedNotFound, conflictSecretNames []string
+	// list of handlers to add/remove to/from main handler
+	var handlers, disabledHandlers []string
 	// create all handlers, filters and mutators
-	var handlers []string
 	for _, secret := range secretsWrapper {
 		// check if secret found has basic config: contacts and one key
 		if secret.Contacts == "" || secret.Keys == nil {
 			errorsSensu = append(errorsSensu, fmt.Sprintf("invalid secret %s", secret.Name))
+			continue
+		}
+		if StringInSlice(secret.Name, reservedNames) {
+			conflictSecretNames = append(conflictSecretNames, fmt.Sprintf("secret using reserved names %s %v", secret.Name, reservedNames))
 			continue
 		}
 		// if Transform is empty, disable mutator
@@ -419,20 +454,40 @@ func executeCheck(event *types.Event) (int, error) {
 		namespace := plugin.SensuNamespace
 		contacts := secret.Contacts
 		filter := generateFilter(name, namespace, contacts, labels)
-		err := putRequest(auth, "filter", name, namespace, filter)
-		if err != nil {
-			countErrors++
-			errorsSensu = append(errorsSensu, fmt.Sprintf("filter %s", secret.Name))
+		if !secret.Disabled {
+			fmt.Printf("Creating filter %s\n", name)
+			err := sensuRequest(auth, "filter", name, namespace, http.MethodPut, filter)
+			if err != nil {
+				countErrors++
+				errorsSensu = append(errorsSensu, fmt.Sprintf("filter %s", secret.Name))
+			}
+		} else {
+			fmt.Printf("Deleting disabled filter %s\n", name)
+			err := sensuRequest(auth, "filter", name, namespace, http.MethodDelete, filter)
+			if err != nil {
+				deletedNotFound = append(deletedNotFound, fmt.Sprintf("Deleting filter %s", secret.Name))
+			}
 		}
+
 		if validMutator {
 			mutatorCommand := fmt.Sprintf("%s '%s'", configuration.MutatorCommand, secret.Transform)
 			mutatorAssets := configuration.MutatorAsset
 			mutator := generateMutator(name, namespace, mutatorCommand, mutatorAssets, labels)
-			err := putRequest(auth, "mutator", name, namespace, mutator)
-			if err != nil {
-				countErrors++
-				errorsSensu = append(errorsSensu, fmt.Sprintf("mutator %s", secret.Name))
+			if !secret.Disabled {
+				fmt.Printf("Creating mutator %s\n", name)
+				err := sensuRequest(auth, "mutator", name, namespace, http.MethodPut, mutator)
+				if err != nil {
+					countErrors++
+					errorsSensu = append(errorsSensu, fmt.Sprintf("mutator %s", secret.Name))
+				}
+			} else {
+				fmt.Printf("Deleting disabled mutator %s\n", name)
+				err := sensuRequest(auth, "mutator", name, namespace, http.MethodDelete, mutator)
+				if err != nil {
+					deletedNotFound = append(deletedNotFound, fmt.Sprintf("Deleting mutator %s", secret.Name))
+				}
 			}
+
 		}
 		var timeout uint32
 		timeout = 10
@@ -449,12 +504,23 @@ func executeCheck(event *types.Event) (int, error) {
 					}
 					handlerAssets := h.Asset
 					handler := generateHandler(handlerName, namespace, handlerCommand, name, handlerAssets, labels, validMutator, timeout)
-					err := putRequest(auth, "handler", handlerName, namespace, handler)
-					if err != nil {
-						countErrors++
-						errorsSensu = append(errorsSensu, fmt.Sprintf("handler %s %s", h.KeyName, secret.Name))
+					if !secret.Disabled {
+						fmt.Printf("Creating handler %s\n", handlerName)
+						err := sensuRequest(auth, "handler", handlerName, namespace, http.MethodPut, handler)
+						if err != nil {
+							countErrors++
+							errorsSensu = append(errorsSensu, fmt.Sprintf("handler %s %s", h.KeyName, secret.Name))
+						}
+						handlers = append(handlers, handlerName)
+					} else {
+						fmt.Printf("Deleting disabled handler %s\n", handlerName)
+						err := sensuRequest(auth, "handler", handlerName, namespace, http.MethodDelete, handler)
+						if err != nil {
+							deletedNotFound = append(deletedNotFound, fmt.Sprintf("Deleting handler %s %s", h.KeyName, secret.Name))
+						}
+						disabledHandlers = append(disabledHandlers, handlerName)
 					}
-					handlers = append(handlers, handlerName)
+
 				}
 			}
 		}
@@ -471,21 +537,37 @@ func executeCheck(event *types.Event) (int, error) {
 		mainHandler.Labels = labels
 		mainHandler.Type = "set"
 	}
+	// generate a handler's names list to add to main handler
 	var negativeHandlerList []string
+	checkDisabledList := false
 	if len(mainHandler.Handlers) != 0 {
 		for _, h := range handlers {
 			if !StringInSlice(h, mainHandler.Handlers) {
 				negativeHandlerList = append(negativeHandlerList, h)
 			}
 		}
+		checkDisabledList = true
 	} else {
 		negativeHandlerList = handlers
 	}
+	mainHandlerList := mainHandler.Handlers
+	// removing disabled secrets
+	if len(disabledHandlers) != 0 && checkDisabledList {
+		fmt.Println("Removing disabled handlers from Main Handler")
+		tmpMainHandlerList := []string{}
+		for _, h := range mainHandlerList {
+			if !StringInSlice(h, disabledHandlers) {
+				tmpMainHandlerList = append(tmpMainHandlerList, h)
+			}
+		}
+		mainHandlerList = tmpMainHandlerList
+	}
+
 	if len(negativeHandlerList) != 0 {
-		mainHandler.Handlers = append(mainHandler.Handlers, negativeHandlerList...)
+		mainHandler.Handlers = append(mainHandlerList, negativeHandlerList...)
 		encoded, _ := json.Marshal(mainHandler)
 		update := bytes.NewBuffer(encoded)
-		err := putRequest(auth, "handler", plugin.MainHandler, plugin.SensuNamespace, update)
+		err := sensuRequest(auth, "handler", plugin.MainHandler, plugin.SensuNamespace, http.MethodPut, update)
 		if err != nil {
 			return sensu.CheckStateWarning, fmt.Errorf("cannot update main handler %s %v", plugin.MainHandler, err)
 		}
@@ -500,8 +582,16 @@ func executeCheck(event *types.Event) (int, error) {
 		return sensu.CheckStateWarning, fmt.Errorf("cannot parse create these sensu configurations: %v", errorsSensu)
 	}
 
+	if len(deletedNotFound) != 0 {
+		fmt.Printf("Resouces to delete not found: %v \n", deletedNotFound)
+	}
+
+	if len(conflictSecretNames) != 0 {
+		fmt.Printf("Conflicted resouces not synced: %v \n", conflictSecretNames)
+	}
+
 	if len(notSyncedList) != 0 {
-		fmt.Printf("Not synced secrets: %v ", notSyncedList)
+		fmt.Printf("Not synced secrets: %v \n", notSyncedList)
 	}
 	return sensu.CheckStateOK, nil
 }
@@ -622,8 +712,8 @@ func putURLManager(sensu, name, namespace string) string {
 	return ""
 }
 
-// post handler to sensu-backend-api
-func putRequest(auth Auth, sensu, name, namespace string, body io.Reader) error {
+// put or delete handler to sensu-backend-api
+func sensuRequest(auth Auth, sensu, name, namespace, method string, body io.Reader) error {
 	client := http.DefaultClient
 	client.Transport = http.DefaultTransport
 	url := putURLManager(sensu, name, namespace)
@@ -633,9 +723,9 @@ func putRequest(auth Auth, sensu, name, namespace string, body io.Reader) error 
 	// s, err := json.MarshalIndent(check, "", "\t")
 	// fmt.Println(string(s), url)
 	// encoded, _ := json.Marshal(check)
-	req, err := http.NewRequest(http.MethodPut, url, body)
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return fmt.Errorf("Failed to put event to %s failed: %v", url, err)
+		return fmt.Errorf("Failed to %s event to %s failed: %v", method, url, err)
 	}
 	if len(plugin.APIBackendKey) == 0 {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken))
@@ -646,10 +736,10 @@ func putRequest(auth Auth, sensu, name, namespace string, body io.Reader) error 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("error executing PUT request for %s: %v", url, err)
+		return fmt.Errorf("error executing %s request for %s: %v", method, url, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("PUT of event to %s failed with status %v ", url, resp.Status)
+		return fmt.Errorf("%s of event to %s failed with status %v ", method, url, resp.Status)
 	}
 
 	defer resp.Body.Close()

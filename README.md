@@ -15,6 +15,8 @@
   - [Check definition](#check-definition)
 - [Installation from source](#installation-from-source)
 - [Additional notes](#additional-notes)
+  - [Sensu User and Roles ](#sensu-user-and-roles)
+  - [Secret Example](#secret-example)
 - [Contributing](#contributing)
 
 ## Overview
@@ -41,6 +43,7 @@ Flags:
   -p, --api-backend-port int           Sensu Go Backend API Port (e.g. 4242) (default 8080)
   -u, --api-backend-user string        Sensu Go Backend API User (default "admin")
   -c, --config string                  Json template for Sensu Check
+  -D, --disabled-label string          Query for disabled label (e.g. sync=disabled)
   -e, --external                       Connect to cluster externally (using kubeconfig)
   -f, --handler-key-file-path string   Handler Key file path to be used instead paste key into handler command
   -h, --help                           help for secret-to-handler
@@ -49,6 +52,7 @@ Flags:
   -l, --label-selectors string         Query for labelSelectors (e.g. release=stable,environment=qa)
   -m, --main-handler string            Main handler of type set to add all new handlers (default "all-alerts")
   -N, --namespace string               Namespace to which to limit this check
+  -R, --reserved-names string          Reserved Names already in use for Sensu that cannot be used anymore (list splited by comma , )
   -s, --secure                         Use TLS connection to API
   -n, --sensu-namespace string         Namespace to which to limit this check
   -t, --trusted-ca-file string         TLS CA certificate bundle in PEM format
@@ -102,6 +106,76 @@ go build
 
 ## Additional notes
 
+### sensu user and roles 
+
+Create a user in Sensu Backend to be used by secret-to-handler:
+```
+---
+type: User
+api_version: core/v2
+metadata:
+  name: secret-to-handler
+spec:
+  disabled: false
+  username: secret-to-handler
+  password_hash: $blablabla
+---
+type: ClusterRole
+api_version: core/v2
+metadata:
+  name: secret-to-handler-role
+spec:
+  rules:
+  - resource_names: []
+    resources:
+    - filters
+    - handlers
+    - mutators
+    verbs:
+    - get
+    - list
+    - create
+    - update
+    - delete
+---
+type: ClusterRoleBinding
+api_version: core/v2
+metadata:
+  name: secret-to-handler-role-binding
+spec:
+  role_ref:
+    name: secret-to-handler-role
+    type: ClusterRole
+  subjects:
+  - name: secret-to-handler
+    type: User
+```
+
+### secret example
+
+Use `disabled: "true"` to clean up all filters, mutators and handlers from Sensu.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alert-route-example
+  namespace: default
+  labels:
+    alert_route: "1"
+type: Opaque
+stringData:
+  name: ops
+  contacts: ops
+  keys: |
+    opsgenie: "api-key-long"
+    chat: "long-webhook"
+  disabled: "false"
+```
+
+For this work, we should have assets for [opsgenie][11] and [hangouts chat][12] and asset for secret-to-handler.
+
+
 ## Contributing
 
 For more information about contributing to this plugin, see [Contributing][1].
@@ -116,3 +190,5 @@ For more information about contributing to this plugin, see [Contributing][1].
 [8]: https://bonsai.sensu.io/
 [9]: https://github.com/sensu-community/sensu-plugin-tool
 [10]: https://docs.sensu.io/sensu-go/latest/reference/assets/
+[11]: https://github.com/betorvs/sensu-opsgenie-handler
+[12]: https://github.com/betorvs/sensu-hangouts-chat-handler
