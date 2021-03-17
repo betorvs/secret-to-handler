@@ -37,6 +37,7 @@ Available Commands:
   version     Print the version number of this plugin
 
 Flags:
+  -F, --add-extra-filter string        Add extra filters to all handlers created by this command. e. fatigue_check,work_hours
   -B, --api-backend-host string        Sensu Go Backend API Host (e.g. 'sensu-backend.example.com') (default "127.0.0.1")
   -k, --api-backend-key string         Sensu Go Backend API Key
   -P, --api-backend-pass string        Sensu Go Backend API Password (default "P@ssw0rd!")

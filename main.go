@@ -37,6 +37,7 @@ type Config struct {
 	Configuration      string
 	HandlerKeyFilePath string
 	ReservedNames      string
+	AddExtraFilter     string
 	APIBackendPass     string
 	APIBackendUser     string
 	APIBackendKey      string
@@ -87,6 +88,7 @@ var (
 	tlsConfig     tls.Config
 	configuration ConfigWrapper
 	reservedNames []string
+	extraFilters  []string
 
 	plugin = Config{
 		PluginConfig: sensu.PluginConfig{
@@ -186,6 +188,15 @@ var (
 			Default:   "",
 			Usage:     "Namespace to which to limit this check",
 			Value:     &plugin.SensuNamespace,
+		},
+		{
+			Path:      "add-extra-filter",
+			Env:       "",
+			Argument:  "add-extra-filter",
+			Shorthand: "F",
+			Default:   "",
+			Usage:     "Add extra filters to all handlers created by this command. e. fatigue_check,work_hours",
+			Value:     &plugin.AddExtraFilter,
 		},
 		{
 			Path:      "api-backend-user",
@@ -316,7 +327,15 @@ func checkArgs(event *types.Event) (int, error) {
 	}
 	// adding main handler into reserved names list
 	reservedNames = append(reservedNames, plugin.MainHandler)
-
+	// extra filters to add
+	if plugin.AddExtraFilter != "" {
+		if strings.Contains(plugin.AddExtraFilter, ",") {
+			extraFilters = strings.Split(plugin.AddExtraFilter, ",")
+		} else {
+			// if doesn't have comma, use this value
+			extraFilters = []string{plugin.AddExtraFilter}
+		}
+	}
 	return sensu.CheckStateOK, nil
 }
 
@@ -455,7 +474,7 @@ func executeCheck(event *types.Event) (int, error) {
 		contacts := secret.Contacts
 		filter := generateFilter(name, namespace, contacts, labels)
 		if !secret.Disabled {
-			fmt.Printf("Creating filter %s\n", name)
+			fmt.Printf("Creating/Updating filter %s\n", name)
 			err := sensuRequest(auth, "filter", name, namespace, http.MethodPut, filter)
 			if err != nil {
 				countErrors++
@@ -474,7 +493,7 @@ func executeCheck(event *types.Event) (int, error) {
 			mutatorAssets := configuration.MutatorAsset
 			mutator := generateMutator(name, namespace, mutatorCommand, mutatorAssets, labels)
 			if !secret.Disabled {
-				fmt.Printf("Creating mutator %s\n", name)
+				fmt.Printf("Creating/Updating mutator %s\n", name)
 				err := sensuRequest(auth, "mutator", name, namespace, http.MethodPut, mutator)
 				if err != nil {
 					countErrors++
@@ -505,7 +524,7 @@ func executeCheck(event *types.Event) (int, error) {
 					handlerAssets := h.Asset
 					handler := generateHandler(handlerName, namespace, handlerCommand, name, handlerAssets, labels, validMutator, timeout)
 					if !secret.Disabled {
-						fmt.Printf("Creating handler %s\n", handlerName)
+						fmt.Printf("Creating/Updating handler %s\n", handlerName)
 						err := sensuRequest(auth, "handler", handlerName, namespace, http.MethodPut, handler)
 						if err != nil {
 							countErrors++
@@ -775,6 +794,9 @@ func generateFilter(name, namespace, contact string, labels map[string]string) i
 	filter.RuntimeAssets = []string{"sensu-go-has-contact-filter"}
 	expression := fmt.Sprintf("has_contact(event, \"%s\")", contact)
 	filter.Expressions = []string{expression}
+	if len(extraFilters) != 0 {
+		filter.Expressions = append(filter.Expressions, extraFilters...)
+	}
 	encoded, _ := json.Marshal(filter)
 	return bytes.NewBuffer(encoded)
 }
