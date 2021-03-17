@@ -777,6 +777,9 @@ func generateHandler(name, namespace, command, filter string, assets []string, l
 	handler.RuntimeAssets = assets
 	filters := []string{"is_incident", "not_silenced", filter}
 	handler.Filters = filters
+	if len(extraFilters) != 0 {
+		handler.Filters = append(handler.Filters, extraFilters...)
+	}
 	if mutator {
 		handler.Mutator = filter
 	}
@@ -794,9 +797,6 @@ func generateFilter(name, namespace, contact string, labels map[string]string) i
 	filter.RuntimeAssets = []string{"sensu-go-has-contact-filter"}
 	expression := fmt.Sprintf("has_contact(event, \"%s\")", contact)
 	filter.Expressions = []string{expression}
-	if len(extraFilters) != 0 {
-		filter.Expressions = append(filter.Expressions, extraFilters...)
-	}
 	encoded, _ := json.Marshal(filter)
 	return bytes.NewBuffer(encoded)
 }
